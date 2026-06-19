@@ -11,7 +11,7 @@
       "input_cost_per_1m": 0.27,
       "output_cost_per_1m": 1.10,
       "quality_tier": "best",
-      "enabled": false
+      "enabled": true
     },
     "gemini-flash": {
       "format": "gemini",

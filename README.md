@@ -1,6 +1,6 @@
-# plan-council
+# deepseek-council
 
-Adversarial AI review of your implementation plan before you write a line of code.
+Adversarial AI review of your implementation plan before you write a line of code — powered by DeepSeek V4 Pro.
 
 ---
 
@@ -19,7 +19,7 @@ Adversarial AI review of your implementation plan before you write a line of cod
 
 You write a plan. Claude says "looks good." You implement it. You hit bugs that were always in the design.
 
-plan-council runs 3 adversarial LLM roles in parallel against your plan — before implementation — catching what one perspective misses. Each role stays in its lane. A synthesis agent consolidates their findings. You get a concrete APPROVED / REVISE / MAJOR_REVISE verdict with specific, actionable issues.
+deepseek-council runs 3 adversarial LLM roles in parallel against your plan — before implementation — catching what one perspective misses. Each role stays in its lane. A synthesis agent consolidates their findings. You get a concrete APPROVED / REVISE / MAJOR_REVISE verdict with specific, actionable issues.
 
 ---
 
@@ -93,20 +93,20 @@ What changed after this review: dropped the separate ledger entirely (Simplicity
 ## Quick start
 
 ```bash
-git clone https://github.com/nhouseholder/plan-council
-cd plan-council
+git clone https://github.com/nhouseholder/deepseek-council
+cd deepseek-council
 bash setup.sh
 
-# Edit providers.json: set "enabled": true for your chosen provider
-# Edit ~/.plan-council/.env and add your API key
+# Add your DeepSeek API key (get one at platform.deepseek.com):
+echo 'DEEPSEEK_API_KEY=your_key_here' >> ~/.plan-council/.env
 
-# Check what provider will be selected and estimated cost:
+# DeepSeek V4 Pro is enabled by default — check estimated cost:
 python3 review.py --plan PLAN.md --discover
 
 # Single review (1 model, up to 3 rounds):
 python3 review.py --plan PLAN.md
 
-# Full council (3 roles in parallel + synthesis):
+# Full council (3 roles in parallel + synthesis, ~$0.002–$0.005):
 python3 review.py --plan PLAN.md --council
 ```
 
@@ -154,7 +154,7 @@ Priority order: environment variable > `~/.plan-council/.env` > `~/.claude/crede
 Add to your plan-exit gate in `CLAUDE.md`:
 
 ```
-python3 /path/to/plan-council/review.py --plan PLAN.md --council
+python3 /path/to/deepseek-council/review.py --plan PLAN.md --council
 ```
 
 Or wire as a hook that fires after `PLAN.md` is written. The `--json-output` flag emits hook-compatible JSON:
