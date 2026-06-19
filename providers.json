@@ -1,0 +1,63 @@
+{
+  "_note": "Set your API keys as environment variables or in ~/.plan-council/.env. Cost table in USD per 1M tokens. Verify pricing at each provider's site. model_id='auto' triggers Gemini model auto-discovery (requires GEMINI_API_KEY).",
+  "_costs_last_updated": "2026-06-18",
+  "providers": {
+    "deepseek-v4-pro": {
+      "format": "anthropic",
+      "api_base": "https://api.deepseek.com/anthropic",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model_id": "deepseek-v4-pro",
+      "model_pattern": null,
+      "input_cost_per_1m": 0.27,
+      "output_cost_per_1m": 1.10,
+      "quality_tier": "best",
+      "enabled": false
+    },
+    "gemini-flash": {
+      "format": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "model_id": "auto",
+      "model_pattern": "gemini-[0-9]+\\.[0-9]+-flash$",
+      "input_cost_per_1m": 0.15,
+      "output_cost_per_1m": 0.60,
+      "quality_tier": "fast",
+      "enabled": false
+    },
+    "gemini-pro": {
+      "format": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "model_id": "auto",
+      "model_pattern": "gemini-[0-9]+\\.[0-9]+-pro$",
+      "input_cost_per_1m": 1.25,
+      "output_cost_per_1m": 10.0,
+      "quality_tier": "best",
+      "enabled": false
+    },
+    "openai-gpt4o-mini": {
+      "format": "openai",
+      "api_base": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_id": "gpt-4o-mini",
+      "model_pattern": null,
+      "input_cost_per_1m": 0.15,
+      "output_cost_per_1m": 0.60,
+      "quality_tier": "fast",
+      "enabled": false
+    },
+    "anthropic-haiku": {
+      "format": "anthropic",
+      "api_base": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "model_id": "claude-haiku-4-5-20251001",
+      "model_pattern": null,
+      "input_cost_per_1m": 0.80,
+      "output_cost_per_1m": 4.0,
+      "quality_tier": "fast",
+      "enabled": false
+    }
+  },
+  "selection": {
+    "mode": "cheapest",
+    "est_output_tokens": 1500
+  }
+}

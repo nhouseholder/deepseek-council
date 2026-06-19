@@ -1,0 +1,5 @@
+.model-cache.json
+__pycache__/
+*.pyc
+.env
+PLAN-REVIEW-LOG.md
