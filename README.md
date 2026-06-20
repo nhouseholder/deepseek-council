@@ -7,11 +7,11 @@ Adversarial AI review of your implementation plan before you write a line of cod
 | Stat | Value |
 |------|-------|
 | Cost per council run | $0.003–$0.007 |
-| Finding specificity | 99.9% (983/984 cite a file, function, or step number) |
-| Approval rate | 17.1% — the council is not a rubber stamp |
-| Plan-change rate | 98% — when flagged REVISE, the plan changed 146/149 times |
-| Meta-judge quality | 2.2/3.0 avg (findings rated by a separate judge call) |
-| Reviews run | 285 |
+| Plan-change rate | 98% — when flagged REVISE, the plan changed 166/169 times |
+| Meta-judge quality | 2.21/3.0 avg (findings rated by a separate judge call) |
+| Non-obvious findings | 29% scored 3/3 — genuinely non-obvious catches |
+| Reviews run | 90+ (tracked since 2026-06-13) |
+| Estimated total spend | ~$0.23 across all tracked runs |
 
 ---
 
@@ -43,6 +43,19 @@ A Synthesis agent consolidates their findings and gives a final verdict:
 - **MAJOR_REVISE** — serious issues from any reviewer; do not start coding
 
 Results append to `PLAN-REVIEW-LOG.md` next to your plan file. A meta-judge call rates each finding on a 1–3 quality scale so you know which issues are worth acting on.
+
+---
+
+## Real catches from production
+
+Two plans, six combined issues caught — all accepted and fixed before a line of code was written.
+
+**This repo's own upgrade plan** ($0.0049):
+- **Risk Analyst** — `--diff` flag would send raw `git diff` output to external LLMs — credential exfiltration if plaintext secrets exist in source. Fix: `_scan_diff_for_secrets()` redaction before injection.
+- **Implementation Realist** — Concurrent Gemini cache write race: `model_id: "auto"` triggers network call + `.model-cache.json` write; 4 parallel threads would corrupt the file. Fix: pre-resolve all providers serially before spawning the thread pool.
+- **Simplicity Challenger** — GitHub Actions template hardcodes `origin/main` instead of `${{ github.base_ref }}`. Fix: use the PR context variable, always correct on any branch.
+
+**CLV tracking plan** ($0.0051) — shown in full below.
 
 ---
 
