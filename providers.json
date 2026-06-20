@@ -1,6 +1,6 @@
 {
   "_note": "Set your API keys as environment variables or in ~/.plan-council/.env. Cost table in USD per 1M tokens. Verify pricing at each provider's site. model_id='auto' triggers Gemini model auto-discovery (requires GEMINI_API_KEY).",
-  "_costs_last_updated": "2026-06-18",
+  "_costs_last_updated": "2026-06-19",
   "providers": {
     "deepseek-v4-pro": {
       "format": "anthropic",

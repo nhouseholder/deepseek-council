@@ -18,7 +18,7 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
 
@@ -104,7 +104,7 @@ Consolidate their findings into a single actionable verdict.
 
 ══════════ ROLE REVIEWS ══════════
 {role_outputs}
-══════════════════════════════════
+══════════════════════════
 
 Consolidation rules:
 - Issues in 2+ reviews = HIGH CONFIDENCE → must appear in final output
@@ -123,8 +123,14 @@ Return ONLY this structure:
 VERDICT: APPROVED | REVISE | MAJOR_REVISE
 REASON: [most critical issue, or "Plan passes multi-perspective review" if APPROVED]"""
 
+HEDGE_STARTERS = (
+    "consider ", "maybe ", "perhaps ", "could be ", "might want",
+    "it would be", "it's worth", "you should think about",
+    "ensure that ", "make sure to ",
+)
 
-def append_metric(entry: dict) -> None:
+
+def append_metric(entry):
     try:
         PLAN_COUNCIL_DIR.mkdir(parents=True, exist_ok=True)
         with open(METRICS_LOG, "a") as f:
@@ -133,7 +139,7 @@ def append_metric(entry: dict) -> None:
         pass
 
 
-def compute_plan_sha(plan_path: str) -> str:
+def compute_plan_sha(plan_path):
     try:
         content = Path(plan_path).read_bytes()
         return hashlib.sha256(content).hexdigest()[:7]
@@ -141,7 +147,7 @@ def compute_plan_sha(plan_path: str) -> str:
         return "unknown"
 
 
-def load_env_var(key: str):
+def load_env_var(key):
     # Env vars take priority — set them in your shell or CI environment
     val = os.environ.get(key)
     if val:
@@ -274,6 +280,7 @@ def call_api(fmt, api_key, model_id, prompt, cfg):
         elif fmt == "openai":
             text = data["choices"][0]["message"]["content"]
         elif fmt == "anthropic":
+            # DeepSeek v4-pro prepends a thinking block; find the first text block
             text_block = next((b for b in data["content"] if b.get("type") == "text"), None)
             if text_block is None:
                 raise KeyError("no text-type content block in response")
@@ -309,7 +316,7 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
     if not plan_file.is_file():
         msg = f"Plan file not found: {plan_path}"
         if json_output:
-            print(json.dumps({"continue": True, "agent_message": f"plan-review: {msg}"}))
+            print(json.dumps({"continue": True, "agent_message": f"⚠️ plan-review: {msg}"}))
         else:
             print(msg, file=sys.stderr)
         return False
@@ -323,7 +330,7 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
     if not pname:
         msg = "No available provider (check API keys and providers.json)"
         if json_output:
-            print(json.dumps({"continue": True, "agent_message": f"plan-review: {msg}"}))
+            print(json.dumps({"continue": True, "agent_message": f"⚠️ plan-review: {msg}"}))
         else:
             print(msg, file=sys.stderr)
         return False
@@ -366,7 +373,7 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
         if err:
             msg = f"API call failed: {err}"
             if json_output:
-                print(json.dumps({"continue": True, "agent_message": f"plan-review: {msg}"}))
+                print(json.dumps({"continue": True, "agent_message": f"⚠️ plan-review: {msg}"}))
             else:
                 print(f"\n[plan-review] Error: {msg}", file=sys.stderr)
             return False
@@ -392,42 +399,54 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
     if json_output:
         categories_str = ", ".join(matched) if matched else "general"
         if last_verdict == "APPROVED":
-            msg = f"plan-review: APPROVED ({pname}/{model_id}, ${cost:.4f}) — {categories_str}. Full review -> PLAN-REVIEW-LOG.md"
+            msg = f"✅ plan-review: APPROVED ({pname}/{model_id}, ${cost:.4f}) — {categories_str}. Full review -> PLAN-REVIEW-LOG.md"
         elif last_verdict == "REVISE":
-            msg = f"plan-review: REVISE — {last_reason or categories_str} ({pname}/{model_id}). Full review -> PLAN-REVIEW-LOG.md"
+            msg = f"⚠️ plan-review: REVISE — {last_reason or categories_str} ({pname}/{model_id}). Full review -> PLAN-REVIEW-LOG.md"
         else:
-            msg = f"plan-review: no clear verdict after {max_rounds} round(s). Check PLAN-REVIEW-LOG.md"
+            msg = f"⚠️ plan-review: no clear verdict after {max_rounds} round(s). Check PLAN-REVIEW-LOG.md"
         print(json.dumps({"continue": True, "agent_message": msg}))
     else:
         if not silent:
-            status = "APPROVED" if last_verdict == "APPROVED" else "REVISE"
+            status = "✓ APPROVED" if last_verdict == "APPROVED" else "⚠ REVISE"
             print(f"\n{status} — {pname}/{model_id} — ${cost:.4f} — PLAN-REVIEW-LOG.md updated")
 
     return last_verdict == "APPROVED"
 
 
-def get_project_context(plan_path: Path) -> str:
+def get_project_context(plan_path):
     plan_dir = plan_path.parent
     cwd = Path.cwd()
     home = Path.home()
-    lines: list[str] = [f"Project: {plan_dir.name}  (plan in: {plan_dir.name}/)\n"]
 
-    def _read_capped(path: Path, cap: int, label: str):
+    _generic = {"plans", ".plans", ".claude", "claude", "commands", "skills"}
+    project_name = cwd.name if cwd.name not in _generic else plan_path.stem
+    lines = [
+        f"Project: {project_name}  (cwd: {cwd}  plan: {plan_path.name})\n",
+        "Context for council: you are reviewing an implementation plan for the project above.\n",
+    ]
+
+    def _read_capped(path, cap, label):
         if not path.is_file():
             return None
         content = path.read_text(encoding="utf-8", errors="replace")
         suffix = "\n[...truncated...]" if len(content) > cap else ""
         return f"# {label}\n{content[:cap]}{suffix}\n"
 
-    # Global CLAUDE.md / AGENTS.md — coding rules and constraints
-    for fname in ("CLAUDE.md", "AGENTS.md", ".cursorrules"):
-        block = _read_capped(home / fname, 2000, f"Global rules (~/{fname})")
+    # 1. Global rules — check multiple locations in priority order, use first found
+    global_candidates = [
+        (home / ".claude" / "CLAUDE.md", 5000, "Global rules (~/.claude/CLAUDE.md)"),
+        (home / "CLAUDE.md", 2000, "Global rules (~/CLAUDE.md)"),
+        (home / "AGENTS.md", 2000, "Global rules (~/AGENTS.md)"),
+        (home / ".cursorrules", 2000, "Global rules (~/.cursorrules)"),
+    ]
+    for path, cap, label in global_candidates:
+        block = _read_capped(path, cap, label)
         if block:
             lines.append(block)
             break
 
-    # Project CLAUDE.md / AGENTS.md
-    seen: set[Path] = set()
+    # 2. Project CLAUDE.md / AGENTS.md
+    seen = set()
     for candidate in [plan_dir / "CLAUDE.md", cwd / "CLAUDE.md", plan_dir / "AGENTS.md", cwd / "AGENTS.md"]:
         if candidate.is_file() and candidate.resolve() not in seen:
             seen.add(candidate.resolve())
@@ -436,38 +455,59 @@ def get_project_context(plan_path: Path) -> str:
                 lines.append(block)
             break
 
-    # Newest handoff
+    # 3. Project KIMI.md — operational rules (project-level only; global ~/KIMI.md is too large)
+    for candidate in [plan_dir / "KIMI.md", cwd / "KIMI.md"]:
+        if candidate.is_file():
+            block = _read_capped(candidate, 1200, f"Project ops ({candidate.name})")
+            if block:
+                lines.append(block)
+            break
+
+    # 4. BETTING_SYSTEM_RULES.md — sports qualification gates (auto-detect, skipped if absent)
+    for candidate in [
+        plan_dir / "BETTING_SYSTEM_RULES.md",
+        cwd / "BETTING_SYSTEM_RULES.md",
+        home / ".kimi" / "BETTING_SYSTEM_RULES.md",
+    ]:
+        if candidate.is_file():
+            block = _read_capped(candidate, 2000, "Betting system rules (BETTING_SYSTEM_RULES.md)")
+            if block:
+                lines.append(block)
+            break
+
+    # 5. Newest handoff — recent session decisions and context
     handoffs_dir = cwd / "handoffs"
     if handoffs_dir.is_dir():
         handoff_files = sorted(
             [f for f in handoffs_dir.iterdir() if f.is_file() and f.suffix == ".md"],
-            key=lambda f: f.stat().st_mtime, reverse=True
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
         )
         if handoff_files:
-            block = _read_capped(handoff_files[0], 800, f"Latest handoff ({handoff_files[0].name})")
+            block = _read_capped(handoff_files[0], 1500, f"Latest handoff ({handoff_files[0].name})")
             if block:
                 lines.append(block)
 
-    # Current tasks
+    # 6. tasks/todo.md — current work state
     block = _read_capped(cwd / "tasks" / "todo.md", 500, "Current tasks (tasks/todo.md)")
     if block:
         lines.append(block)
 
-    # Recent commits
+    # 7. Recent commits
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", "-10"],
-            capture_output=True, text=True, cwd=str(plan_dir), timeout=5
+            capture_output=True, text=True, cwd=str(cwd), timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             lines.append(f"Recent commits:\n{result.stdout.strip()}\n")
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
-    # Files referenced in the plan
+    # 8. Files referenced in the plan — inline first 60 lines so council sees what exists
     plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
     referenced = re.findall(r'`([^`]+\.(py|ts|js|json|sh|md|yaml|yml|toml|cfg|env))`', plan_text)
-    seen_files: set[str] = set()
+    seen_files = set()
     for fname, _ in referenced:
         if fname in seen_files:
             continue
@@ -477,15 +517,16 @@ def get_project_context(plan_path: Path) -> str:
             if candidate.is_file():
                 snippet_lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()[:60]
                 lines.append(
-                    f"# {fname} (first {len(snippet_lines)} lines)\n"
-                    + "\n".join(snippet_lines) + "\n"
+                    f"# {fname} (first {len(snippet_lines)} lines — exists in project)\n"
+                    + "\n".join(snippet_lines)
+                    + "\n"
                 )
                 break
 
     return "\n".join(lines)
 
 
-def _extract_findings(text: str) -> list[str]:
+def _extract_findings(text):
     findings = []
     for line in text.splitlines():
         line = line.strip()
@@ -496,19 +537,18 @@ def _extract_findings(text: str) -> list[str]:
     return findings
 
 
-def _is_specific(finding: str) -> bool:
+def _is_specific(finding):
     f = finding.lower()
     if re.search(r'\w+\.(py|js|ts|json|md|sh|yaml|yml|env|cfg|toml)', f):
         return True
     if re.search(r'`[^`]+`|step \d+|line \d+', f):
         return True
-    hedge_starters = ("consider ", "maybe ", "perhaps ", "could be ", "might want", "it would be", "it's worth")
-    if any(f.startswith(h) for h in hedge_starters):
+    if any(f.startswith(h) for h in HEDGE_STARTERS):
         return False
     return len(finding.split()) >= 12
 
 
-def format_debate_report(role_results: dict) -> str:
+def format_debate_report(role_results):
     bar = "━" * 15
     lines = ["", f"{bar} COUNCIL DEBATE {bar}", ""]
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
@@ -518,16 +558,20 @@ def format_debate_report(role_results: dict) -> str:
         verdict, _ = all_verdicts[name]
         top_two = all_findings[name][:2]
         lines.append(f"{name} — {verdict}")
-        for f in top_two:
-            lines.append(f"  • {f[:140]}")
-        if not top_two:
+        if top_two:
+            for f in top_two:
+                lines.append(f"  • {f[:140]}")
+        else:
             lines.append("  • (no findings extracted)")
         lines.append("")
 
-    check_terms = ["rollback", "race condition", "timeout", "authentication", "authorization",
-                   "over-engineer", "complex", "prerequisite", "undefined"]
+    check_terms = [
+        "rollback", "race condition", "timeout",
+        "authentication", "authorization",
+        "over-engineer", "complex", "prerequisite", "undefined",
+    ]
     role_names = list(all_findings.keys())
-    shared: list[str] = []
+    shared = []
     for i in range(len(role_names)):
         for j in range(i + 1, len(role_names)):
             t1 = " ".join(all_findings[role_names[i]]).lower()
@@ -550,12 +594,13 @@ def format_debate_report(role_results: dict) -> str:
     return "\n".join(lines)
 
 
-def run_meta_judge(role_results: dict, pcfg: dict, api_key: str, model_id: str):
+def run_meta_judge(role_results, pcfg, api_key, model_id):
     all_text = "\n\n".join(f"=== {name} ===\n{text}" for name, text in role_results.items())
     prompt = (
         "You are evaluating the quality of adversarial plan review findings.\n\n"
         "Rate each bullet-point finding on a 1-3 scale:\n"
-        "1 = Boilerplate: generic concern with no plan-specific detail\n"
+        "1 = Boilerplate: generic concern with no plan-specific detail "
+        '(e.g., "missing error handling" without naming where)\n'
         "2 = Specific but expected: concrete, a careful developer would likely catch it\n"
         "3 = Non-obvious insight: would realistically slip through without adversarial review\n\n"
         f"Findings to rate:\n{all_text}\n\n"
@@ -565,7 +610,8 @@ def run_meta_judge(role_results: dict, pcfg: dict, api_key: str, model_id: str):
     text, err = call_api(pcfg["format"], api_key, model_id, prompt, pcfg)
     if err or not text:
         return None
-    match = re.search(r'\[.*?\]', text, re.DOTALL)
+    # greedy match so the full array is captured even when findings contain "]"
+    match = re.search(r'\[[\s\S]*\]', text)
     if not match:
         return None
     try:
@@ -577,11 +623,16 @@ def run_meta_judge(role_results: dict, pcfg: dict, api_key: str, model_id: str):
     total = len(scores)
     avg = sum(s.get("score", 1) for s in scores) / total
     pct_high = sum(1 for s in scores if s.get("score") == 3) / total * 100
-    return {"scores": scores, "avg": round(avg, 2), "pct_high": round(pct_high), "n": total,
-            "findings": [s.get("finding", "") for s in scores]}
+    return {
+        "scores": scores,
+        "avg": round(avg, 2),
+        "pct_high": round(pct_high),
+        "n": total,
+        "findings": [s.get("finding", "") for s in scores],
+    }
 
 
-def generate_council_report(role_results: dict, synthesis_verdict: str, synthesis_reason: str, total_cost: float) -> str:
+def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost):
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
 
@@ -591,9 +642,12 @@ def generate_council_report(role_results: dict, synthesis_verdict: str, synthesi
     quality = "HIGH" if specificity_pct >= 60 else ("MEDIUM" if specificity_pct >= 30 else "LOW")
 
     role_names = list(all_findings.keys())
-    agreement_hints: list[str] = []
-    check_terms = ["rollback", "race condition", "timeout", "authentication", "authorization",
-                   "over-engineer", "complex", "prerequisite", "undefined"]
+    agreement_hints = []
+    check_terms = [
+        "rollback", "error handling", "ambiguous", "unclear", "missing",
+        "race condition", "timeout", "authentication", "authorization",
+        "over-engineer", "complex", "prerequisite", "undefined",
+    ]
     for i in range(len(role_names)):
         for j in range(i + 1, len(role_names)):
             t1 = " ".join(all_findings[role_names[i]]).lower()
@@ -612,22 +666,35 @@ def generate_council_report(role_results: dict, synthesis_verdict: str, synthesi
     for name in role_results:
         v, r = all_verdicts[name]
         n = len(all_findings[name])
-        key = (r or "—")[:55]
+        # Prefer REASON; fall back to top finding so the column is never blank
+        top_finding = all_findings[name][0] if all_findings[name] else ""
+        key = (r or top_finding or "—")[:75]
         lines.append(f"| {name} | {v} | {n} | {key} |")
 
+    # Per-role key contributions (top 2 findings per role, below the table)
+    lines += ["", "**Key contributions per role:**"]
+    for name in role_results:
+        top = all_findings[name][:2]
+        if top:
+            lines.append(f"- **{name}:** {top[0][:120]}")
+            if len(top) > 1:
+                lines.append(f"  — {top[1][:120]}")
+
     lines += [
-        "", "### Quality Signals",
-        f"- **Specificity:** {specific_f}/{total_f} findings concrete ({specificity_pct:.0f}%) -> **{quality}**",
+        "",
+        "### Quality Signals",
+        f"- **Specificity:** {specific_f}/{total_f} findings are concrete ({specificity_pct:.0f}%) -> **{quality}**",
         f"- **Votes:** {votes.count('MAJOR_REVISE')} MAJOR_REVISE · {votes.count('REVISE')} REVISE · {votes.count('APPROVED')} APPROVED",
     ]
     if agreement_hints:
         lines.append(f"- **Cross-role agreement:** {'; '.join(agreement_hints)}")
     else:
-        lines.append("- **Cross-role agreement:** None — reviewers raised independent concerns")
+        lines.append("- **Cross-role agreement:** None detected — reviewers raised independent concerns")
 
     lines += [
         f"- **Synthesis:** {synthesis_verdict}" + (f" — {synthesis_reason}" if synthesis_reason else ""),
-        f"- **Cost:** ${total_cost:.4f}", "",
+        f"- **Cost:** ${total_cost:.4f}",
+        "",
     ]
 
     if synthesis_verdict == "APPROVED":
@@ -644,15 +711,72 @@ def generate_council_report(role_results: dict, synthesis_verdict: str, synthesi
         guidance = "Inconclusive. Review full output in PLAN-REVIEW-LOG.md."
 
     lines.append(f"### Recommendation\n**{guidance}**")
+
+    # Enumerate all unique findings with checkboxes for the implementing agent to triage
+    lines += [
+        "",
+        "## Claude Assessment (Required)",
+        "For each finding below: **Accept** (address in plan) or **Reject** (with one-line rationale).",
+        "Apply accepted findings to the plan; mark rejected ones `<!-- rejected: reason -->`.",
+        "",
+    ]
+    seen_f = set()
+    for name in role_results:
+        role_label_printed = False
+        for f in all_findings[name]:
+            dedup_key = f[:60].lower()
+            if dedup_key in seen_f:
+                continue
+            seen_f.add(dedup_key)
+            if not role_label_printed:
+                lines.append(f"**{name}:**")
+                role_label_printed = True
+            lines.append(f"- [ ] {f[:120]}")
+        if role_label_printed:
+            lines.append("")
+
     return "\n".join(lines)
 
 
-def run_council(plan_path: str, provider_override=None, json_output: bool = False, silent: bool = False, discover_only: bool = False) -> bool:
+def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, synthesis_reason, pname, model_id, total_cost):
+    """Prepend a compact council verdict table to the top of the plan file."""
+    all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
+    all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
+
+    today = str(date.today())
+    lines = [
+        f"<!-- council-review: {today} | {pname}/{model_id} | ~${total_cost:.4f} -->",
+        "",
+        f"## Council Review — {today}",
+        "",
+        "| Role | Verdict | Key Finding |",
+        "|------|---------|-------------|",
+    ]
+    for name in role_results:
+        v, r = all_verdicts[name]
+        top = all_findings[name][0] if all_findings[name] else "—"
+        key = (r or top)[:80]
+        lines.append(f"| {name} | {v} | {key} |")
+
+    synthesis_key = (synthesis_reason or "Plan passes multi-perspective review")[:80]
+    lines.append(f"| **Synthesis** | **{synthesis_verdict}** | {synthesis_key} |")
+    lines += ["", "---", ""]
+
+    header = "\n".join(lines) + "\n"
+    try:
+        existing = plan_file.read_text(encoding="utf-8")
+        plan_file.write_text(header + existing, encoding="utf-8")
+    except OSError as e:
+        print(f"[council] Could not prepend summary to plan: {e}", file=sys.stderr)
+
+
+def run_council(plan_path, provider_override=None, json_output=False, silent=False, discover_only=False):
+    """3-role parallel council review + synthesis. ~2x cost of a single review."""
     plan_file = Path(plan_path)
     if not plan_file.is_file():
         msg = f"Plan file not found: {plan_path}"
         if json_output:
-            print(json.dumps({"continue": True, "agent_message": f"council: {msg}"}))
+            print(json.dumps({"continue": True, "agent_message": f"⚠️ council: {msg}"}))
         else:
             print(msg, file=sys.stderr)
         return False
@@ -667,7 +791,7 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
     if not pname:
         msg = "No available provider (check API keys and providers.json)"
         if json_output:
-            print(json.dumps({"continue": True, "agent_message": f"council: {msg}"}))
+            print(json.dumps({"continue": True, "agent_message": f"⚠️ council: {msg}"}))
         else:
             print(msg, file=sys.stderr)
         return False
@@ -678,7 +802,7 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
     if discover_only:
         return True
 
-    def _call_role(role: dict):
+    def _call_role(role):
         prompt = ROLE_PROMPT_TEMPLATE.format(
             ctx_header=ctx_header,
             plan_content=plan_excerpt,
@@ -688,13 +812,24 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
         )
         text, err = call_api(pcfg["format"], api_key, model_id, prompt, pcfg)
         if err:
+            print(f"[council] {role['name']}: retry after error — {err}", file=sys.stderr)
             text, err = call_api(pcfg["format"], api_key, model_id, prompt, pcfg)
         return role["name"], text, err
 
-    role_results: dict[str, str] = {}
+    role_results = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(_call_role, role): role for role in COUNCIL_ROLES}
-        for future in as_completed(futures):
+        done, not_done = wait(futures, timeout=90)
+        for future in not_done:
+            future.cancel()
+            role = futures[future]
+            if not silent:
+                print(f"[council] {role['name']}: timed out after 90s", file=sys.stderr)
+            role_results[role["name"]] = (
+                f"## {role['name']} Findings\n[Timeout]\n\n"
+                "VERDICT: UNKNOWN\nREASON: API call timed out"
+            )
+        for future in done:
             name, text, err = future.result()
             if err:
                 if not silent:
@@ -722,7 +857,10 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
     if synthesis_err:
         role_verdicts = [parse_verdict(t)[0] for t in role_results.values()]
         fallback = "MAJOR_REVISE" if "MAJOR_REVISE" in role_verdicts else ("REVISE" if "REVISE" in role_verdicts else "APPROVED")
-        synthesis_text = f"## Council Verdict\n[Synthesis failed: {synthesis_err}]\n\nVERDICT: {fallback}\nREASON: Synthesis error — check role findings above"
+        synthesis_text = (
+            f"## Council Verdict\n[Synthesis failed: {synthesis_err}]\n\n"
+            f"VERDICT: {fallback}\nREASON: Synthesis error — check role findings above"
+        )
 
     final_verdict, final_reason = parse_verdict(synthesis_text)
     if not silent:
@@ -730,6 +868,11 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
 
     total_cost = unit_cost * 2.2
     report = generate_council_report(role_results, final_verdict, final_reason, total_cost)
+
+    prepend_council_summary_to_plan(
+        plan_file, role_results, final_verdict, final_reason,
+        pname, model_id, total_cost
+    )
 
     meta = run_meta_judge(role_results, pcfg, api_key, model_id)
     if meta:
@@ -741,7 +884,8 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
         for s in meta["scores"]:
             meta_lines.append(f"| {s.get('finding', '')[:50]} | {s.get('score')} | {s.get('reason', '')[:80]} |")
         meta_lines.append(
-            f"\n**Avg quality: {meta['avg']} / 3.0 · High-value findings (score=3): {meta['pct_high']}% of {meta['n']}**"
+            f"\n**Avg quality: {meta['avg']} / 3.0 · "
+            f"High-value findings (score=3): {meta['pct_high']}% of {meta['n']}**"
         )
         report += "\n\n" + "\n".join(meta_lines)
 
@@ -761,28 +905,40 @@ def run_council(plan_path: str, provider_override=None, json_output: bool = Fals
 
     if json_output:
         if final_verdict == "APPROVED":
-            msg = f"council: APPROVED ({pname}/{model_id}, ~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
+            msg = f"✅ council: APPROVED ({pname}/{model_id}, ~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
         elif final_verdict in ("REVISE", "MAJOR_REVISE"):
-            msg = f"council: {final_verdict} — {final_reason} (~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
+            msg = f"⚠️ council: {final_verdict} — {final_reason} (~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
         else:
-            msg = "council: inconclusive — check PLAN-REVIEW-LOG.md"
+            msg = "⚠️ council: inconclusive — check PLAN-REVIEW-LOG.md"
         print(json.dumps({"continue": True, "agent_message": msg}))
     else:
         if not silent:
             print(f"\n{report}")
 
+    # Record plan SHA for influence tracking
     plan_sha = compute_plan_sha(plan_path)
+    sha_note = f"\n**Plan SHA at review:** {plan_sha}  (recorded for influence tracking)\n"
+    with open(log_path, "a") as f:
+        f.write(sha_note)
+
     today = str(date.today())
     append_metric({
-        "date": today, "plan": Path(plan_path).name,
-        "path": str(Path(plan_path).resolve()), "cwd": str(Path.cwd()),
-        "type": "influence-pending", "sha_at_review": plan_sha,
+        "date": today,
+        "plan": Path(plan_path).name,
+        "path": str(Path(plan_path).resolve()),
+        "cwd": str(Path.cwd()),
+        "type": "influence-pending",
+        "sha_at_review": plan_sha,
     })
     if meta:
         append_metric({
-            "date": today, "plan": Path(plan_path).name,
-            "type": "quality", "avg": meta["avg"],
-            "pct_high": meta["pct_high"], "n": meta["n"], "findings": meta["findings"],
+            "date": today,
+            "plan": Path(plan_path).name,
+            "type": "quality",
+            "avg": meta["avg"],
+            "pct_high": meta["pct_high"],
+            "n": meta["n"],
+            "findings": meta["findings"],
         })
 
     return final_verdict == "APPROVED"
