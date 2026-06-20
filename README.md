@@ -92,6 +92,14 @@ What changed after this review: dropped the separate ledger entirely (Simplicity
 
 ## Quick start
 
+**Via pip:**
+```bash
+pip install git+https://github.com/nhouseholder/deepseek-council.git
+echo 'DEEPSEEK_API_KEY=your_key_here' >> ~/.plan-council/.env
+deepseek-council --plan PLAN.md --council
+```
+
+**Via clone:**
 ```bash
 git clone https://github.com/nhouseholder/deepseek-council
 cd deepseek-council
@@ -100,7 +108,7 @@ bash setup.sh
 # Add your DeepSeek API key (get one at platform.deepseek.com):
 echo 'DEEPSEEK_API_KEY=your_key_here' >> ~/.plan-council/.env
 
-# DeepSeek V4 Pro is enabled by default — check estimated cost:
+# Check estimated cost:
 python3 review.py --plan PLAN.md --discover
 
 # Single review (1 model, up to 3 rounds):
@@ -108,6 +116,9 @@ python3 review.py --plan PLAN.md
 
 # Full council (4 roles in parallel + synthesis, ~$0.003–$0.007):
 python3 review.py --plan PLAN.md --council
+
+# Include a git diff for additional context:
+python3 review.py --plan PLAN.md --council --diff origin/main
 ```
 
 ---
@@ -119,6 +130,7 @@ Supported providers:
 | Provider | Key env var | Input / Output (per 1M tokens) | Notes |
 |----------|-------------|-------------------------------|-------|
 | DeepSeek V4 Pro | `DEEPSEEK_API_KEY` | $0.27 / $1.10 | Default — cheapest quality-tier |
+| Gemini 3 Flash (thinking) | `GEMINI_API_KEY` | free | Free tier, `thinking_level: high`; used for diversity roles |
 | Gemini Flash | `GEMINI_API_KEY` | $0.15 / $0.60 | Auto-discovers latest model version |
 | Gemini Pro | `GEMINI_API_KEY` | $1.25 / $10.00 | Best Gemini quality |
 | GPT-4o Mini | `OPENAI_API_KEY` | $0.15 / $0.60 | OpenAI compatible |
@@ -194,6 +206,32 @@ The `--json-output` flag emits hook-compatible JSON for programmatic use:
 ```json
 {"continue": true, "agent_message": "council: REVISE — compute_clv() undefined (~$0.0051). Report -> PLAN-REVIEW-LOG.md"}
 ```
+
+---
+
+## GitHub Actions
+
+Gate PRs that touch plan files behind a council review. Copy `docs/plan-review-action.yml` to `.github/workflows/plan-review.yml` in your repo.
+
+Required secrets: `DEEPSEEK_API_KEY` + `GEMINI_API_KEY` (Gemini free tier works).
+
+The action:
+- Triggers on PRs that change `PLAN.md` or `plans/**.md`
+- Runs `--council --diff origin/<base>` on each changed plan file
+- Posts a verdict comment on the PR
+- Fails the PR on MAJOR_REVISE
+
+---
+
+## `--diff` flag
+
+Pass a git ref to include a redacted diff as reviewer context:
+
+```bash
+python3 review.py --plan PLAN.md --council --diff origin/main
+```
+
+The diff is appended to the plan excerpt (≤8000 chars). Common secret patterns (API keys, tokens, hex strings >32 chars) are redacted before sending to any external API.
 
 ---
 

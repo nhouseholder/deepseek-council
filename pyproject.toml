@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "deepseek-council"
+version = "1.2.0"
+description = "4-role adversarial LLM plan review before you write code"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["plan-review", "llm", "adversarial", "deepseek", "gemini"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/nhouseholder/deepseek-council"
+Repository = "https://github.com/nhouseholder/deepseek-council"
+
+[project.scripts]
+deepseek-council = "review:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deepseek_council*"]
+
+[tool.setuptools.package-data]
+"*" = ["providers.json"]

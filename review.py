@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
@@ -245,9 +246,12 @@ def select_provider(config, plan_chars, override=None):
     return name, model_id, key, cfg, cost
 
 
-def build_payload(fmt, model_id, prompt):
+def build_payload(fmt, model_id, prompt, cfg=None):
     if fmt == "gemini":
-        return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3}})
+        gen_config: dict = {"temperature": 0.3}
+        if cfg and cfg.get("thinking_level"):
+            gen_config["thinkingConfig"] = {"thinkingLevel": cfg["thinking_level"]}
+        return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_config})
     elif fmt == "openai":
         return json.dumps({"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3})
     elif fmt == "anthropic":
@@ -256,7 +260,7 @@ def build_payload(fmt, model_id, prompt):
 
 
 def call_api(fmt, api_key, model_id, prompt, cfg):
-    payload = build_payload(fmt, model_id, prompt)
+    payload = build_payload(fmt, model_id, prompt, cfg)
     if fmt == "gemini":
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
         headers = ["-H", "Content-Type: application/json"]
@@ -273,8 +277,9 @@ def call_api(fmt, api_key, model_id, prompt, cfg):
     else:
         return None, f"Unknown format: {fmt}"
 
+    default_timeout = cfg.get("timeout", 30) if cfg else 30
     result = subprocess.run(
-        ["curl", "-s", "--max-time", "30", "-X", "POST", url] + headers + ["-d", payload],
+        ["curl", "-s", "--max-time", str(default_timeout), "-X", "POST", url] + headers + ["-d", payload],
         capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -323,7 +328,42 @@ def parse_verdict(text):
     return "UNKNOWN", ""
 
 
-def run_review(plan_path, provider_override=None, max_rounds=3, json_output=False, discover_only=False, silent=False):
+_SECRET_PATTERNS = [
+    re.compile(r'(?i)(api[_-]?key|secret|token|password|passwd|auth|credential)\s*[:=]\s*\S{8,}'),
+    re.compile(r'(?i)(sk|pk|rk)-[a-zA-Z0-9]{20,}'),
+    re.compile(r'\b[a-fA-F0-9]{32,}\b'),
+]
+
+
+def _scan_diff_for_secrets(diff: str) -> str:
+    """Redact likely secrets from diff lines before sending to external APIs."""
+    lines = []
+    for line in diff.splitlines():
+        redacted = line
+        for pat in _SECRET_PATTERNS:
+            redacted = pat.sub(lambda m: m.group(0)[:4] + "***REDACTED***", redacted)
+        lines.append(redacted)
+    return "\n".join(lines)
+
+
+def _load_diff(ref: str) -> str:
+    """Run git diff vs ref, redact secrets, return as a context block (≤8000 chars)."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", ref, "--stat", "--unified=3"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return f"[diff unavailable: {result.stderr.strip()[:200]}]"
+        raw = result.stdout
+        redacted = _scan_diff_for_secrets(raw)
+        truncated = redacted[:8000] + ("\n[...diff truncated...]" if len(redacted) > 8000 else "")
+        return f"\n\n## Git Diff vs {ref}\n```diff\n{truncated}\n```"
+    except Exception as e:
+        return f"[diff error: {e}]"
+
+
+def run_review(plan_path, provider_override=None, max_rounds=3, json_output=False, discover_only=False, silent=False, diff_context=""):
     plan_file = Path(plan_path)
     if not plan_file.is_file():
         msg = f"Plan file not found: {plan_path}"
@@ -335,6 +375,8 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
 
     plan_content = plan_file.read_text(encoding="utf-8")
     plan_excerpt = plan_content[:12000] + ("\n\n[...truncated...]" if len(plan_content) > 12000 else "")
+    if diff_context:
+        plan_excerpt += diff_context
 
     config = load_providers()
     pname, model_id, api_key, pcfg, cost = select_provider(config, len(plan_content), provider_override)
@@ -646,7 +688,24 @@ def run_meta_judge(role_results, pcfg, api_key, model_id):
     }
 
 
-def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost, role_providers=None):
+_MODEL_ABBREV = {
+    "deepseek-v4-pro": "ds-pro",
+    "deepseek-v4-flash": "ds-flash",
+    "gemini-3-flash-thinking": "g3-flash",
+    "gemini-3-flash-preview": "g3-flash",
+    "nemotron-3-ultra": "n3u",
+    "anthropic-haiku": "haiku",
+    "gemini-flash": "g-flash",
+    "gemini-pro": "g-pro",
+    "openai-gpt4o-mini": "gpt4o-mini",
+}
+
+
+def _short_model(name: str) -> str:
+    return _MODEL_ABBREV.get(name, name[:10])
+
+
+def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost, role_providers=None, role_times=None):
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
 
@@ -674,17 +733,18 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
     lines = [
         "## Council Performance Report", "",
         "### Role Verdicts",
-        "| Role | Model | Verdict | Findings | Key Concern |",
-        "|------|-------|---------|----------|-------------|",
+        "| Role | Model | Verdict | Time | Findings | Key Concern |",
+        "|------|-------|---------|------|----------|-------------|",
     ]
     for name in role_results:
         v, r = all_verdicts[name]
         n = len(all_findings[name])
-        # Prefer REASON; fall back to top finding so the column is never blank
         top_finding = all_findings[name][0] if all_findings[name] else ""
-        key = (r or top_finding or "—")[:75]
-        model_tag = (role_providers or {}).get(name, "—")
-        lines.append(f"| {name} | {model_tag} | {v} | {n} | {key} |")
+        key = (r or top_finding or "—")[:45]
+        model_tag = _short_model((role_providers or {}).get(name, "—"))
+        t = (role_times or {}).get(name)
+        ts = f"{t}s" if t is not None else "—"
+        lines.append(f"| {name} | {model_tag} | {v} | {ts} | {n} | {key} |")
 
     # Per-role key contributions (top 2 findings per role, below the table)
     lines += ["", "**Key contributions per role:**"]
@@ -753,30 +813,26 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
     return "\n".join(lines)
 
 
-def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, synthesis_reason, pname, model_id, total_cost, role_providers=None):
+def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, synthesis_reason, role_providers=None):
     """Prepend a compact council verdict table to the top of the plan file."""
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
 
-    today = str(date.today())
     lines = [
-        f"<!-- council-review: {today} | {pname}/{model_id} | ~${total_cost:.4f} -->",
+        "Council review result:",
         "",
-        f"## Council Review — {today}",
-        "",
-        "| Role | Verdict | Key Finding |",
-        "|------|---------|-------------|",
+        "| Role | Model | Verdict | Key Finding |",
+        "|------|-------|---------|-------------|",
     ]
     for name in role_results:
         v, r = all_verdicts[name]
         top = all_findings[name][0] if all_findings[name] else "—"
-        key = (r or top)[:80]
-        model_tag = (role_providers or {}).get(name, "")
-        name_cell = f"{name} [{model_tag}]" if model_tag else name
-        lines.append(f"| {name_cell} | {v} | {key} |")
+        key = (r or top)[:45]
+        model_tag = _short_model((role_providers or {}).get(name, ""))
+        lines.append(f"| {name} | {model_tag} | {v} | {key} |")
 
-    synthesis_key = (synthesis_reason or "Plan passes multi-perspective review")[:80]
-    lines.append(f"| **Synthesis** | **{synthesis_verdict}** | {synthesis_key} |")
+    synthesis_key = (synthesis_reason or "Plan passes multi-perspective review")[:45]
+    lines.append(f"| **Synthesis** | — | **{synthesis_verdict}** | {synthesis_key} |")
     lines += ["", "---", ""]
 
     header = "\n".join(lines) + "\n"
@@ -787,7 +843,7 @@ def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, 
         print(f"[council] Could not prepend summary to plan: {e}", file=sys.stderr)
 
 
-def run_council(plan_path, provider_override=None, json_output=False, silent=False, discover_only=False):
+def run_council(plan_path, provider_override=None, json_output=False, silent=False, discover_only=False, diff_context=""):
     """4-role parallel council review + synthesis. ~3x cost of a single review."""
     plan_file = Path(plan_path)
     if not plan_file.is_file():
@@ -800,6 +856,8 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
 
     plan_content = plan_file.read_text(encoding="utf-8")
     plan_excerpt = plan_content[:12000] + ("\n\n[...truncated...]" if len(plan_content) > 12000 else "")
+    if diff_context:
+        plan_excerpt += diff_context
     ctx_header = get_project_context(plan_file)
 
     config = load_providers()
@@ -850,7 +908,10 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
     if discover_only:
         return True
 
+    role_times: dict = {}
+
     def _call_role(role):
+        t0 = time.monotonic()
         r_pname, r_model, r_key, r_pcfg = resolved_role_providers.get(
             role["name"], (pname, model_id, api_key, pcfg)
         )
@@ -865,25 +926,28 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         if err:
             print(f"[council] {role['name']}: retry after error — {err}", file=sys.stderr)
             text, err = call_api(r_pcfg["format"], r_key, r_model, prompt, r_pcfg)
-        return role["name"], r_pname, text, err
+        elapsed = round(time.monotonic() - t0)
+        return role["name"], r_pname, text, err, elapsed
 
     role_results = {}
     role_providers_used = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_call_role, role): role for role in COUNCIL_ROLES}
-        done, not_done = wait(futures, timeout=90)
+        done, not_done = wait(futures, timeout=120)
         for future in not_done:
             future.cancel()
             role = futures[future]
             if not silent:
-                print(f"[council] {role['name']}: timed out after 90s", file=sys.stderr)
+                print(f"[council] {role['name']}: timed out after 120s", file=sys.stderr)
             role_results[role["name"]] = (
                 f"## {role['name']} Findings\n[Timeout]\n\n"
                 "VERDICT: UNKNOWN\nREASON: API call timed out"
             )
             role_providers_used[role["name"]] = pname
+            role_times[role["name"]] = None
         for future in done:
-            name, r_pname, text, err = future.result()
+            name, r_pname, text, err, elapsed = future.result()
+            role_times[name] = elapsed
             role_providers_used[name] = r_pname
             if err:
                 if not silent:
@@ -893,10 +957,27 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
                 verdict, _ = parse_verdict(text)
                 if not silent:
                     provider_tag = f" [{r_pname}]" if r_pname != pname else ""
-                    print(f"[council] {name}{provider_tag}: {verdict}")
+                    print(f"[council] {name}{provider_tag}: {verdict} ({elapsed}s)")
                 role_results[name] = text
 
     if not silent and not json_output:
+        # Compact summary table printed first
+        _av_pre = {name: parse_verdict(text) for name, text in role_results.items()}
+        _af_pre = {name: _extract_findings(text) for name, text in role_results.items()}
+        pre_rows = [
+            "\nCouncil review result:",
+            "| Role | Model | Verdict | Time | Key Finding |",
+            "|------|-------|---------|------|-------------|",
+        ]
+        for _name in role_results:
+            _v, _r = _av_pre[_name]
+            _tag = _short_model(role_providers_used.get(_name, "—"))
+            _top = _af_pre[_name][0] if _af_pre[_name] else "—"
+            _key = (_r or _top)[:45]
+            _t = role_times.get(_name)
+            _ts = f"{_t}s" if _t is not None else "—"
+            pre_rows.append(f"| {_name} | {_tag} | {_v} | {_ts} | {_key} |")
+        print("\n".join(pre_rows))
         print(format_debate_report(role_results))
 
     if not silent:
@@ -922,11 +1003,11 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         print(f"{final_verdict}" + (f" — {final_reason}" if final_reason else ""))
 
     total_cost = unit_cost * 3.0
-    report = generate_council_report(role_results, final_verdict, final_reason, total_cost, role_providers=role_providers_used)
+    report = generate_council_report(role_results, final_verdict, final_reason, total_cost, role_providers=role_providers_used, role_times=role_times)
 
     prepend_council_summary_to_plan(
         plan_file, role_results, final_verdict, final_reason,
-        pname, model_id, total_cost, role_providers=role_providers_used
+        role_providers=role_providers_used
     )
 
     meta = run_meta_judge(role_results, pcfg, api_key, model_id)
@@ -959,12 +1040,27 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         f.write(log_entry)
 
     if json_output:
+        # Build compact role table for agent visibility
+        _av = {name: parse_verdict(text) for name, text in role_results.items()}
+        _af = {name: _extract_findings(text) for name, text in role_results.items()}
+        role_rows = ["Council review result:", "| Role | Model | Verdict | Time | Key Finding |", "|------|-------|---------|------|-------------|"]
+        for _name in role_results:
+            _v, _r = _av[_name]
+            _tag = _short_model(role_providers_used.get(_name, "—"))
+            _top = _af[_name][0] if _af[_name] else "—"
+            _key = (_r or _top)[:45]
+            _t = role_times.get(_name)
+            _ts = f"{_t}s" if _t is not None else "—"
+            role_rows.append(f"| {_name} | {_tag} | {_v} | {_ts} | {_key} |")
+        role_rows.append(f"| **Synthesis** | — | **{final_verdict}** | {(final_reason or '—')[:45]} |")
+        role_table = "\n".join(role_rows)
         if final_verdict == "APPROVED":
-            msg = f"✅ council: APPROVED ({pname}/{model_id}, ~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
+            status = f"✅ council: APPROVED (~${total_cost:.4f})"
         elif final_verdict in ("REVISE", "MAJOR_REVISE"):
-            msg = f"⚠️ council: {final_verdict} — {final_reason} (~${total_cost:.4f}). Report -> PLAN-REVIEW-LOG.md"
+            status = f"⚠️ council: {final_verdict} — {final_reason} (~${total_cost:.4f})"
         else:
-            msg = "⚠️ council: inconclusive — check PLAN-REVIEW-LOG.md"
+            status = "⚠️ council: inconclusive"
+        msg = f"{role_table}\n\n{status}\n\nFull findings → PLAN-REVIEW-LOG.md"
         print(json.dumps({"continue": True, "agent_message": msg}))
     else:
         if not silent:
@@ -1008,18 +1104,25 @@ def main():
     parser.add_argument("--discover", action="store_true", help="Print selected provider/model/cost, then exit")
     parser.add_argument("--silent", action="store_true", help="Suppress progress output")
     parser.add_argument("--council", action="store_true", help="4-role parallel council review (~3x cost)")
+    parser.add_argument("--diff", metavar="REF", help="Append a redacted git diff (vs REF) to the plan context")
     args = parser.parse_args()
+
+    diff_context = ""
+    if args.diff:
+        diff_context = _load_diff(args.diff)
 
     if args.council:
         ok = run_council(
             plan_path=args.plan, provider_override=args.provider,
             json_output=args.json_output, silent=args.silent, discover_only=args.discover,
+            diff_context=diff_context,
         )
     else:
         ok = run_review(
             plan_path=args.plan, provider_override=args.provider,
             max_rounds=args.rounds, json_output=args.json_output,
             discover_only=args.discover, silent=args.silent,
+            diff_context=diff_context,
         )
     sys.exit(0 if ok else 1)
 
