@@ -1,6 +1,6 @@
 # deepseek-council
 
-Adversarial AI review of your implementation plan before you write a line of code — powered by DeepSeek V4 Pro.
+Runs 4 LLM roles in parallel against your implementation plan and returns a structured verdict before you write code. Each role has a distinct focus; a synthesis agent consolidates findings into APPROVED / REVISE / MAJOR_REVISE.
 
 ---
 
@@ -15,14 +15,6 @@ Adversarial AI review of your implementation plan before you write a line of cod
 
 ---
 
-## The problem
-
-You write a plan. Claude says "looks good." You implement it. You hit bugs that were always in the design.
-
-deepseek-council runs 4 adversarial LLM roles in parallel against your plan — before implementation — catching what one perspective misses. Each role stays in its lane. A synthesis agent consolidates their findings. You get a concrete APPROVED / REVISE / MAJOR_REVISE verdict with specific, actionable issues.
-
----
-
 ## How it works
 
 Four roles review your plan independently in parallel:
@@ -34,7 +26,7 @@ Four roles review your plan independently in parallel:
 | Simplicity Challenger | Over-engineering, scope creep, unnecessary abstractions, simpler paths to the same outcome |
 | Senior Dev Realist | Production-quality code: idiomatic patterns, stdlib vs. custom, testability, tech debt, would-a-PR-reviewer-approve |
 
-Each role can be assigned a different LLM provider for **model diversity** — different training data and RLHF biases mean uncorrelated blind spots, so the council catches issues that same-model multi-prompting misses. Configure role providers in `providers.json`.
+Each role can be assigned a different LLM provider via `council_role_providers` in `providers.json`. Different models have different training data and blind spots, so role diversity tends to surface more than running the same model with different prompts.
 
 A Synthesis agent consolidates their findings and gives a final verdict:
 
@@ -46,22 +38,9 @@ Results append to `PLAN-REVIEW-LOG.md` next to your plan file. A meta-judge call
 
 ---
 
-## Real catches from production
+## Example output
 
-Two plans, six combined issues caught — all accepted and fixed before a line of code was written.
-
-**This repo's own upgrade plan** ($0.0049):
-- **Risk Analyst** — `--diff` flag would send raw `git diff` output to external LLMs — credential exfiltration if plaintext secrets exist in source. Fix: `_scan_diff_for_secrets()` redaction before injection.
-- **Implementation Realist** — Concurrent Gemini cache write race: `model_id: "auto"` triggers network call + `.model-cache.json` write; 4 parallel threads would corrupt the file. Fix: pre-resolve all providers serially before spawning the thread pool.
-- **Simplicity Challenger** — GitHub Actions template hardcodes `origin/main` instead of `${{ github.base_ref }}`. Fix: use the PR context variable, always correct on any branch.
-
-**CLV tracking plan** ($0.0051) — shown in full below.
-
----
-
-## Real example
-
-A CLV tracking plan that looked fine. Three minutes and $0.0051 later:
+CLV tracking plan, $0.0051:
 
 ```
 $ python3 review.py --plan PLAN.md --council
@@ -107,11 +86,11 @@ Specificity: 14/14 findings concrete (100%) -> HIGH
 Cost: $0.0051
 ```
 
-When you're ready to implement, the plan-exit gate intercepts ExitPlanMode and prompts you to run the council first:
+The plan-exit gate intercepts ExitPlanMode and prompts you to run the council before starting:
 
 ![Plan-exit gate with council options](docs/plan-exit-gate-example.png)
 
-The council also prepends a verdict table to the top of your plan file — the first thing you see when you open it:
+The council prepends a verdict table to the top of your plan file:
 
 ![Council verdict table prepended to plan](docs/council-table-example.png)
 
@@ -143,7 +122,7 @@ python3 review.py --plan PLAN.md --council
 
 ## Provider support
 
-Works with any of:
+Supported providers:
 
 | Provider | Key env var | Input / Output (per 1M tokens) | Notes |
 |----------|-------------|-------------------------------|-------|
