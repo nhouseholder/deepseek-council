@@ -86,14 +86,6 @@ Specificity: 14/14 findings concrete (100%) -> HIGH
 Cost: $0.0051
 ```
 
-The plan-exit gate intercepts ExitPlanMode and prompts you to run the council before starting:
-
-![Plan-exit gate with council options](docs/plan-exit-gate-example.png)
-
-The council prepends a verdict table to the top of your plan file:
-
-![Council verdict table prepended to plan](docs/council-table-example.png)
-
 What changed after this review: dropped the separate ledger entirely (Simplicity Challenger was right), defined `compute_clv()` with explicit US odds conversion, added `is_fade` sign inversion, replaced JSON rewrite with append-only writes + atomic rename.
 
 ---
