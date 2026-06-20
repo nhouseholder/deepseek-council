@@ -1,5 +1,5 @@
 {
-  "_note": "Set your API keys as environment variables or in ~/.plan-council/.env. Cost table in USD per 1M tokens. Verify pricing at each provider's site. model_id='auto' triggers Gemini model auto-discovery (requires GEMINI_API_KEY).",
+  "_note": "Cost table in USD per 1M tokens. Verify DeepSeek pricing at platform.deepseek.com — update when prices change. model_id='auto' triggers auto-discovery via discover.py (Gemini only); literal model_id pins the model. council_role_providers assigns per-role providers for model diversity — different training data means uncorrelated blind spots.",
   "_costs_last_updated": "2026-06-19",
   "providers": {
     "deepseek-v4-pro": {
@@ -13,25 +13,27 @@
       "quality_tier": "best",
       "enabled": true
     },
-    "gemini-flash": {
-      "format": "gemini",
-      "api_key_env": "GEMINI_API_KEY",
-      "model_id": "auto",
-      "model_pattern": "gemini-[0-9]+\\.[0-9]+-flash$",
-      "input_cost_per_1m": 0.15,
-      "output_cost_per_1m": 0.60,
-      "quality_tier": "fast",
-      "enabled": false
-    },
     "gemini-pro": {
       "format": "gemini",
-      "api_key_env": "GEMINI_API_KEY",
+      "api_key_env": "GEMINI_API_KEY_PAID",
+      "fallback_api_key_env": "GEMINI_API_KEY",
       "model_id": "auto",
       "model_pattern": "gemini-[0-9]+\\.[0-9]+-pro$",
       "input_cost_per_1m": 1.25,
       "output_cost_per_1m": 10.0,
       "quality_tier": "best",
       "enabled": false
+    },
+    "gemini-flash": {
+      "format": "gemini",
+      "api_key_env": "GEMINI_API_KEY_PAID",
+      "fallback_api_key_env": "GEMINI_API_KEY",
+      "model_id": "auto",
+      "model_pattern": "gemini-[0-9]+\\.[0-9]+-flash$",
+      "input_cost_per_1m": 0.15,
+      "output_cost_per_1m": 0.60,
+      "quality_tier": "fast",
+      "enabled": true
     },
     "openai-gpt4o-mini": {
       "format": "openai",
@@ -53,8 +55,15 @@
       "input_cost_per_1m": 0.80,
       "output_cost_per_1m": 4.0,
       "quality_tier": "fast",
-      "enabled": false
+      "enabled": true
     }
+  },
+  "council_role_providers": {
+    "_note": "Assign specific providers to each council role for model diversity — different training data means uncorrelated blind spots. Set to null or remove a key to use the default provider for that role.",
+    "Risk Analyst": "deepseek-v4-pro",
+    "Implementation Realist": "anthropic-haiku",
+    "Simplicity Challenger": "gemini-flash",
+    "Senior Dev Realist": "deepseek-v4-pro"
   },
   "selection": {
     "mode": "cheapest",

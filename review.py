@@ -6,7 +6,7 @@ Auto-selects the cheapest enabled provider unless --provider is specified.
 
 Usage:
   python3 review.py --plan PLAN.md
-  python3 review.py --plan PLAN.md --council          # 3-role parallel council
+  python3 review.py --plan PLAN.md --council          # 4-role parallel council
   python3 review.py --plan PLAN.md --provider deepseek-v4-pro --rounds 2
   python3 review.py --plan PLAN.md --json-output      # hook-compatible JSON
   python3 review.py --plan PLAN.md --discover         # print provider/cost, exit
@@ -75,6 +75,18 @@ COUNCIL_ROLES = [
         "focus": "Challenge the complexity. Is this over-engineered? Is there a simpler path to the same outcome? Unnecessary abstractions, files, or steps? Scope creep that wasn't requested?",
         "verdict_scale": "APPROVED | REVISE",
     },
+    {
+        "name": "Senior Dev Realist",
+        "focus": (
+            "Evaluate whether this plan would produce production-quality, maintainable code "
+            "if executed literally. Ask: Is this idiomatic for the target language/framework? "
+            "Are multiple steps reinventing stdlib or existing utilities? Is the result "
+            "testable — or does the plan create coupling that blocks unit testing? Would a "
+            "code reviewer approve a PR that implements this exactly? Does this introduce "
+            "tech debt (magic values, raw dicts where a dataclass fits, ad-hoc parsing)?"
+        ),
+        "verdict_scale": "APPROVED | REVISE",
+    },
 ]
 
 ROLE_PROMPT_TEMPLATE = """\
@@ -99,7 +111,7 @@ VERDICT: {verdict_scale}
 REASON: [your single most critical finding, one sentence. If APPROVED: "Plan looks solid from this perspective."]"""
 
 SYNTHESIS_PROMPT_TEMPLATE = """\
-You are the synthesis agent. Three specialist reviewers have independently analyzed this plan.
+You are the synthesis agent. Four specialist reviewers have independently analyzed this plan.
 Consolidate their findings into a single actionable verdict.
 
 ══════════ ROLE REVIEWS ══════════
@@ -634,7 +646,7 @@ def run_meta_judge(role_results, pcfg, api_key, model_id):
     }
 
 
-def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost):
+def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost, role_providers=None):
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
 
@@ -662,8 +674,8 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
     lines = [
         "## Council Performance Report", "",
         "### Role Verdicts",
-        "| Role | Verdict | Findings | Key Concern |",
-        "|------|---------|----------|-------------|",
+        "| Role | Model | Verdict | Findings | Key Concern |",
+        "|------|-------|---------|----------|-------------|",
     ]
     for name in role_results:
         v, r = all_verdicts[name]
@@ -671,7 +683,8 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
         # Prefer REASON; fall back to top finding so the column is never blank
         top_finding = all_findings[name][0] if all_findings[name] else ""
         key = (r or top_finding or "—")[:75]
-        lines.append(f"| {name} | {v} | {n} | {key} |")
+        model_tag = (role_providers or {}).get(name, "—")
+        lines.append(f"| {name} | {model_tag} | {v} | {n} | {key} |")
 
     # Per-role key contributions (top 2 findings per role, below the table)
     lines += ["", "**Key contributions per role:**"]
@@ -740,7 +753,7 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
     return "\n".join(lines)
 
 
-def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, synthesis_reason, pname, model_id, total_cost):
+def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, synthesis_reason, pname, model_id, total_cost, role_providers=None):
     """Prepend a compact council verdict table to the top of the plan file."""
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
@@ -758,7 +771,9 @@ def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, 
         v, r = all_verdicts[name]
         top = all_findings[name][0] if all_findings[name] else "—"
         key = (r or top)[:80]
-        lines.append(f"| {name} | {v} | {key} |")
+        model_tag = (role_providers or {}).get(name, "")
+        name_cell = f"{name} [{model_tag}]" if model_tag else name
+        lines.append(f"| {name_cell} | {v} | {key} |")
 
     synthesis_key = (synthesis_reason or "Plan passes multi-perspective review")[:80]
     lines.append(f"| **Synthesis** | **{synthesis_verdict}** | {synthesis_key} |")
@@ -773,7 +788,7 @@ def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, 
 
 
 def run_council(plan_path, provider_override=None, json_output=False, silent=False, discover_only=False):
-    """3-role parallel council review + synthesis. ~2x cost of a single review."""
+    """4-role parallel council review + synthesis. ~3x cost of a single review."""
     plan_file = Path(plan_path)
     if not plan_file.is_file():
         msg = f"Plan file not found: {plan_path}"
@@ -800,13 +815,45 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
 
     assert pcfg is not None and unit_cost is not None  # guaranteed when pname is set
 
+    # Pre-resolve all role providers serially to warm cache and avoid concurrent auto-discovery
+    role_provider_map = config.get("council_role_providers", {})
+    resolved_role_providers: dict = {}
+    for _role in COUNCIL_ROLES:
+        _role_pname = role_provider_map.get(_role["name"])
+        if _role_pname:
+            _role_pcfg = config["providers"].get(_role_pname)
+            if _role_pcfg:
+                _role_key = get_api_key(_role_pcfg)
+                _role_model = resolve_model_id(_role_pname, _role_pcfg)
+                if _role_key and _role_model:
+                    resolved_role_providers[_role["name"]] = (_role_pname, _role_model, _role_key, _role_pcfg)
+                else:
+                    print(
+                        f"[council] WARNING: Role '{_role['name']}' provider '{_role_pname}' unavailable"
+                        f" — falling back to default '{pname}'",
+                        file=sys.stderr,
+                    )
+            else:
+                print(
+                    f"[council] WARNING: Role '{_role['name']}' provider '{_role_pname}' not found"
+                    f" — falling back to default '{pname}'",
+                    file=sys.stderr,
+                )
+
     if not silent:
-        est_council = unit_cost * 2.2
-        print(f"[council] {pname}/{model_id} — 3 roles in parallel... est. cost: ~${est_council:.4f}")
+        est_council = unit_cost * 3.0  # 4 roles + synthesis + meta-judge (rough estimate)
+        distinct = list(dict.fromkeys(
+            resolved_role_providers.get(r["name"], (pname,))[0] for r in COUNCIL_ROLES
+        ))
+        provider_str = "/".join(distinct) if distinct else pname
+        print(f"[council] {provider_str} — {len(COUNCIL_ROLES)} roles in parallel... est. cost: ~${est_council:.4f}")
     if discover_only:
         return True
 
     def _call_role(role):
+        r_pname, r_model, r_key, r_pcfg = resolved_role_providers.get(
+            role["name"], (pname, model_id, api_key, pcfg)
+        )
         prompt = ROLE_PROMPT_TEMPLATE.format(
             ctx_header=ctx_header,
             plan_content=plan_excerpt,
@@ -814,14 +861,15 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
             role_focus=role["focus"],
             verdict_scale=role["verdict_scale"],
         )
-        text, err = call_api(pcfg["format"], api_key, model_id, prompt, pcfg)
+        text, err = call_api(r_pcfg["format"], r_key, r_model, prompt, r_pcfg)
         if err:
             print(f"[council] {role['name']}: retry after error — {err}", file=sys.stderr)
-            text, err = call_api(pcfg["format"], api_key, model_id, prompt, pcfg)
-        return role["name"], text, err
+            text, err = call_api(r_pcfg["format"], r_key, r_model, prompt, r_pcfg)
+        return role["name"], r_pname, text, err
 
     role_results = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    role_providers_used = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_call_role, role): role for role in COUNCIL_ROLES}
         done, not_done = wait(futures, timeout=90)
         for future in not_done:
@@ -833,8 +881,10 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
                 f"## {role['name']} Findings\n[Timeout]\n\n"
                 "VERDICT: UNKNOWN\nREASON: API call timed out"
             )
+            role_providers_used[role["name"]] = pname
         for future in done:
-            name, text, err = future.result()
+            name, r_pname, text, err = future.result()
+            role_providers_used[name] = r_pname
             if err:
                 if not silent:
                     print(f"[council] {name}: error — {err}", file=sys.stderr)
@@ -842,7 +892,8 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
             else:
                 verdict, _ = parse_verdict(text)
                 if not silent:
-                    print(f"[council] {name}: {verdict}")
+                    provider_tag = f" [{r_pname}]" if r_pname != pname else ""
+                    print(f"[council] {name}{provider_tag}: {verdict}")
                 role_results[name] = text
 
     if not silent and not json_output:
@@ -870,12 +921,12 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
     if not silent:
         print(f"{final_verdict}" + (f" — {final_reason}" if final_reason else ""))
 
-    total_cost = unit_cost * 2.2
-    report = generate_council_report(role_results, final_verdict, final_reason, total_cost)
+    total_cost = unit_cost * 3.0
+    report = generate_council_report(role_results, final_verdict, final_reason, total_cost, role_providers=role_providers_used)
 
     prepend_council_summary_to_plan(
         plan_file, role_results, final_verdict, final_reason,
-        pname, model_id, total_cost
+        pname, model_id, total_cost, role_providers=role_providers_used
     )
 
     meta = run_meta_judge(role_results, pcfg, api_key, model_id)
@@ -956,7 +1007,7 @@ def main():
     parser.add_argument("--json-output", action="store_true", help="Output hook-compatible JSON")
     parser.add_argument("--discover", action="store_true", help="Print selected provider/model/cost, then exit")
     parser.add_argument("--silent", action="store_true", help="Suppress progress output")
-    parser.add_argument("--council", action="store_true", help="3-role parallel council review (~2x cost)")
+    parser.add_argument("--council", action="store_true", help="4-role parallel council review (~3x cost)")
     args = parser.parse_args()
 
     if args.council:

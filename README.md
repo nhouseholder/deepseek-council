@@ -6,7 +6,7 @@ Adversarial AI review of your implementation plan before you write a line of cod
 
 | Stat | Value |
 |------|-------|
-| Cost per council run | $0.002–$0.005 |
+| Cost per council run | $0.003–$0.007 |
 | Finding specificity | 99.9% (983/984 cite a file, function, or step number) |
 | Approval rate | 17.1% — the council is not a rubber stamp |
 | Plan-change rate | 98% — when flagged REVISE, the plan changed 146/149 times |
@@ -19,19 +19,22 @@ Adversarial AI review of your implementation plan before you write a line of cod
 
 You write a plan. Claude says "looks good." You implement it. You hit bugs that were always in the design.
 
-deepseek-council runs 3 adversarial LLM roles in parallel against your plan — before implementation — catching what one perspective misses. Each role stays in its lane. A synthesis agent consolidates their findings. You get a concrete APPROVED / REVISE / MAJOR_REVISE verdict with specific, actionable issues.
+deepseek-council runs 4 adversarial LLM roles in parallel against your plan — before implementation — catching what one perspective misses. Each role stays in its lane. A synthesis agent consolidates their findings. You get a concrete APPROVED / REVISE / MAJOR_REVISE verdict with specific, actionable issues.
 
 ---
 
 ## How it works
 
-Three roles review your plan independently in parallel:
+Four roles review your plan independently in parallel:
 
 | Role | Lane |
 |------|------|
 | Risk Analyst | Data loss, race conditions, missing rollbacks, security gaps, undefined behavior under load |
 | Implementation Realist | Ambiguous steps, undefined functions/files, missing success criteria, unclear ordering |
 | Simplicity Challenger | Over-engineering, scope creep, unnecessary abstractions, simpler paths to the same outcome |
+| Senior Dev Realist | Production-quality code: idiomatic patterns, stdlib vs. custom, testability, tech debt, would-a-PR-reviewer-approve |
+
+Each role can be assigned a different LLM provider for **model diversity** — different training data and RLHF biases mean uncorrelated blind spots, so the council catches issues that same-model multi-prompting misses. Configure role providers in `providers.json`.
 
 A Synthesis agent consolidates their findings and gives a final verdict:
 
@@ -50,10 +53,11 @@ A CLV tracking plan that looked fine. Three minutes and $0.0051 later:
 ```
 $ python3 review.py --plan PLAN.md --council
 
-[council] deepseek-v4-pro — 3 roles in parallel... est. cost: ~$0.0051
-[council] Simplicity Challenger: REVISE
-[council] Implementation Realist: REVISE
-[council] Risk Analyst: REVISE
+[council] deepseek-v4-pro/anthropic-haiku/gemini-flash — 4 roles in parallel... est. cost: ~$0.0051
+[council] Simplicity Challenger [gemini-flash]: REVISE
+[council] Implementation Realist [anthropic-haiku]: REVISE
+[council] Risk Analyst [deepseek-v4-pro]: REVISE
+[council] Senior Dev Realist [deepseek-v4-pro]: REVISE
 [council] Synthesizing... REVISE
 
 ━━━━━━━━━━━━━━━ COUNCIL DEBATE ━━━━━━━━━━━━━━━
@@ -69,6 +73,10 @@ Implementation Realist — REVISE
 Risk Analyst — REVISE
   • `system_clv_ledger.json` single-file JSON: concurrent read-modify-write across 3 pipeline phases with no locking. Silent data corruption under normal sequential use is possible.
   • Seed script has no deduplication — re-run after failure silently doubles all historical CLV.
+
+Senior Dev Realist — REVISE
+  • Raw dict with string keys used throughout where a `CLVEntry` dataclass would enforce required fields at write time.
+  • No unit test path exists — ledger is both written and read by the same function, blocking isolation.
 
 Consensus: All roles recommend revision.
 
@@ -114,7 +122,7 @@ python3 review.py --plan PLAN.md --discover
 # Single review (1 model, up to 3 rounds):
 python3 review.py --plan PLAN.md
 
-# Full council (3 roles in parallel + synthesis, ~$0.002–$0.005):
+# Full council (4 roles in parallel + synthesis, ~$0.003–$0.007):
 python3 review.py --plan PLAN.md --council
 ```
 
