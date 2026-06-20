@@ -335,6 +335,8 @@ def run_review(plan_path, provider_override=None, max_rounds=3, json_output=Fals
             print(msg, file=sys.stderr)
         return False
 
+    assert pcfg is not None  # guaranteed when pname is set
+
     if not silent:
         print(f"[plan-review] Selected: {pname} / {model_id} — estimated cost: ${cost:.4f}")
     if discover_only:
@@ -795,6 +797,8 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         else:
             print(msg, file=sys.stderr)
         return False
+
+    assert pcfg is not None and unit_cost is not None  # guaranteed when pname is set
 
     if not silent:
         est_council = unit_cost * 2.2
