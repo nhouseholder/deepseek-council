@@ -86,6 +86,10 @@ Specificity: 14/14 findings concrete (100%) -> HIGH
 Cost: $0.0051
 ```
 
+When you're ready to implement, the plan-exit gate intercepts ExitPlanMode and prompts you to run the council first:
+
+![Plan-exit gate with council options](docs/plan-exit-gate-example.png)
+
 The council also prepends a verdict table to the top of your plan file — the first thing you see when you open it:
 
 ![Council verdict table prepended to plan](docs/council-table-example.png)
