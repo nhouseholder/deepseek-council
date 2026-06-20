@@ -705,6 +705,14 @@ def _short_model(name: str) -> str:
     return _MODEL_ABBREV.get(name, name[:10])
 
 
+def _truncate(text: str, limit: int = 72) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rfind(" ")
+    cut = cut if cut > limit // 2 else limit
+    return text[:cut] + "…"
+
+
 def generate_council_report(role_results, synthesis_verdict, synthesis_reason, total_cost, role_providers=None, role_times=None):
     all_findings = {name: _extract_findings(text) for name, text in role_results.items()}
     all_verdicts = {name: parse_verdict(text) for name, text in role_results.items()}
@@ -740,7 +748,7 @@ def generate_council_report(role_results, synthesis_verdict, synthesis_reason, t
         v, r = all_verdicts[name]
         n = len(all_findings[name])
         top_finding = all_findings[name][0] if all_findings[name] else ""
-        key = (r or top_finding or "—")[:45]
+        key = _truncate(r or top_finding or "—")
         model_tag = _short_model((role_providers or {}).get(name, "—"))
         t = (role_times or {}).get(name)
         ts = f"{t}s" if t is not None else "—"
@@ -827,11 +835,11 @@ def prepend_council_summary_to_plan(plan_file, role_results, synthesis_verdict, 
     for name in role_results:
         v, r = all_verdicts[name]
         top = all_findings[name][0] if all_findings[name] else "—"
-        key = (r or top)[:45]
+        key = _truncate(r or top)
         model_tag = _short_model((role_providers or {}).get(name, ""))
         lines.append(f"| {name} | {model_tag} | {v} | {key} |")
 
-    synthesis_key = (synthesis_reason or "Plan passes multi-perspective review")[:45]
+    synthesis_key = _truncate(synthesis_reason or "Plan passes multi-perspective review")
     lines.append(f"| **Synthesis** | — | **{synthesis_verdict}** | {synthesis_key} |")
     lines += ["", "---", ""]
 
@@ -973,7 +981,7 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
             _v, _r = _av_pre[_name]
             _tag = _short_model(role_providers_used.get(_name, "—"))
             _top = _af_pre[_name][0] if _af_pre[_name] else "—"
-            _key = (_r or _top)[:45]
+            _key = _truncate(_r or _top)
             _t = role_times.get(_name)
             _ts = f"{_t}s" if _t is not None else "—"
             pre_rows.append(f"| {_name} | {_tag} | {_v} | {_ts} | {_key} |")
@@ -1048,11 +1056,11 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
             _v, _r = _av[_name]
             _tag = _short_model(role_providers_used.get(_name, "—"))
             _top = _af[_name][0] if _af[_name] else "—"
-            _key = (_r or _top)[:45]
+            _key = _truncate(_r or _top)
             _t = role_times.get(_name)
             _ts = f"{_t}s" if _t is not None else "—"
             role_rows.append(f"| {_name} | {_tag} | {_v} | {_ts} | {_key} |")
-        role_rows.append(f"| **Synthesis** | — | **{final_verdict}** | {(final_reason or '—')[:45]} |")
+        role_rows.append(f"| **Synthesis** | — | **{final_verdict}** | {_truncate(final_reason or '—')} |")
         role_table = "\n".join(role_rows)
         if final_verdict == "APPROVED":
             status = f"✅ council: APPROVED (~${total_cost:.4f})"
