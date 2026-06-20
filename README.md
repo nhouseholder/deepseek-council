@@ -149,15 +149,47 @@ Priority order: environment variable > `~/.plan-council/.env` > `~/.claude/crede
 
 ---
 
-## Claude Code / Cursor integration
+## Claude Code skill
 
-Add to your plan-exit gate in `CLAUDE.md`:
+deepseek-council ships with `contribution_report.py` — a `PreToolUse ExitPlanMode` hook that wires into Claude Code's native hook system.
+
+**What it does:** When Claude Code tries to exit plan mode, the hook intercepts and requires you to choose:
+
+```
+Plan ready — how to proceed?
+1. Exit & implement now
+2. DeepSeek Council review (~$0.004–$0.007)
+3. Ultra web review
+```
+
+If you pick option 2, the council runs, appends findings to `PLAN-REVIEW-LOG.md`, and clears the gate automatically. If the plan was revised after the review, that delta is reported before coding begins.
+
+**Wire it in `~/.claude/settings.json`:**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          { "type": "command", "command": "python3 /path/to/deepseek-council/contribution_report.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Copy `SKILL.md` from the repo to `~/.claude/skills/deepseek-council.md` so the council is invokable as `/deepseek-council` from any Claude Code session.
+
+**Or, invoke the council manually from `CLAUDE.md`:**
 
 ```
 python3 /path/to/deepseek-council/review.py --plan PLAN.md --council
 ```
 
-Or wire as a hook that fires after `PLAN.md` is written. The `--json-output` flag emits hook-compatible JSON:
+The `--json-output` flag emits hook-compatible JSON for programmatic use:
 
 ```json
 {"continue": true, "agent_message": "council: REVISE — compute_clv() undefined (~$0.0051). Report -> PLAN-REVIEW-LOG.md"}
