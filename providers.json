@@ -1,6 +1,6 @@
 {
   "_note": "Cost table in USD per 1M tokens. Verify DeepSeek pricing at platform.deepseek.com — update when prices change. model_id='auto' triggers auto-discovery via discover.py (Gemini only); literal model_id pins the model. council_role_providers assigns per-role providers for model diversity — different training data means uncorrelated blind spots.",
-  "_costs_last_updated": "2026-06-19",
+  "_costs_last_updated": "2026-06-20",
   "providers": {
     "deepseek-v4-pro": {
       "format": "anthropic",
@@ -8,8 +8,22 @@
       "api_key_env": "DEEPSEEK_API_KEY",
       "model_id": "deepseek-v4-pro",
       "model_pattern": null,
+      "timeout": 60,
       "input_cost_per_1m": 0.27,
       "output_cost_per_1m": 1.10,
+      "quality_tier": "best",
+      "enabled": true
+    },
+    "gemini-3-flash-thinking": {
+      "format": "gemini",
+      "api_key_env": "GEMINI_API_KEY_PAID",
+      "fallback_api_key_env": "GEMINI_API_KEY",
+      "model_id": "gemini-3-flash-preview",
+      "model_pattern": null,
+      "thinking_level": "high",
+      "timeout": 90,
+      "input_cost_per_1m": 0.0,
+      "output_cost_per_1m": 0.0,
       "quality_tier": "best",
       "enabled": true
     },
@@ -33,7 +47,7 @@
       "input_cost_per_1m": 0.15,
       "output_cost_per_1m": 0.60,
       "quality_tier": "fast",
-      "enabled": true
+      "enabled": false
     },
     "openai-gpt4o-mini": {
       "format": "openai",
@@ -55,15 +69,15 @@
       "input_cost_per_1m": 0.80,
       "output_cost_per_1m": 4.0,
       "quality_tier": "fast",
-      "enabled": true
+      "enabled": false
     }
   },
   "council_role_providers": {
-    "_note": "Assign specific providers to each council role for model diversity — different training data means uncorrelated blind spots. Set to null or remove a key to use the default provider for that role.",
+    "_note": "2×DeepSeek-V4-Pro for high-stakes roles + 2×Gemini-3-Flash-Thinking (free, thinking_level=high) for architectural diversity. Different training data means uncorrelated blind spots.",
+    "Senior Dev Realist": "deepseek-v4-pro",
     "Risk Analyst": "deepseek-v4-pro",
-    "Implementation Realist": "anthropic-haiku",
-    "Simplicity Challenger": "gemini-flash",
-    "Senior Dev Realist": "deepseek-v4-pro"
+    "Implementation Realist": "gemini-3-flash-thinking",
+    "Simplicity Challenger": "gemini-3-flash-thinking"
   },
   "selection": {
     "mode": "cheapest",
