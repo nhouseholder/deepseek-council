@@ -845,8 +845,8 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
                     file=sys.stderr,
                 )
 
+    est_council = unit_cost * 3.0  # 4 roles + synthesis + meta-judge (rough estimate)
     if not silent:
-        est_council = unit_cost * 3.0  # 4 roles + synthesis + meta-judge (rough estimate)
         distinct = list(dict.fromkeys(
             resolved_role_providers.get(r["name"], (pname,))[0] for r in COUNCIL_ROLES
         ))
@@ -864,8 +864,6 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         else:
             print(f"[council] ⚠️ {msg}", file=sys.stderr)
         return False
-
-    plan_entities = _extract_plan_entities(plan_excerpt)
 
 
     def _call_role(role):
