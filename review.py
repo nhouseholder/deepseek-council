@@ -245,13 +245,18 @@ def select_provider(config, plan_chars, override=None):
     return name, model_id, key, cfg, cost
 
 
-def build_payload(fmt, model_id, prompt):
+def build_payload(fmt, model_id, prompt, cfg=None):
+    # ponytail: per-provider max_output_tokens caps runaway billing; thinking models need a higher value in providers.json
+    max_tok = cfg.get("max_output_tokens", 4096) if cfg else 4096
     if fmt == "gemini":
-        return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3}})
+        gen_config: dict = {"temperature": 0.3, "maxOutputTokens": max_tok}
+        if cfg and cfg.get("thinking_level"):
+            gen_config["thinkingConfig"] = {"thinkingLevel": cfg["thinking_level"]}
+        return json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": gen_config})
     elif fmt == "openai":
-        return json.dumps({"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3})
+        return json.dumps({"model": model_id, "max_tokens": max_tok, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3})
     elif fmt == "anthropic":
-        return json.dumps({"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]})
+        return json.dumps({"model": model_id, "max_tokens": max_tok, "messages": [{"role": "user", "content": prompt}]})
     raise ValueError(f"Unknown format: {fmt}")
 
 
@@ -849,6 +854,19 @@ def run_council(plan_path, provider_override=None, json_output=False, silent=Fal
         print(f"[council] {provider_str} — {len(COUNCIL_ROLES)} roles in parallel... est. cost: ~${est_council:.4f}")
     if discover_only:
         return True
+
+    # Advisory budget cap — estimate uses 1500 output tokens; true worst-case at max_output_tokens=4096 is ~2.7× higher
+    cap = config.get("council_budget_usd", 1.0)
+    if est_council > cap:
+        msg = f"council skipped — est ${est_council:.4f} exceeds cap ${cap:.2f} (raise council_budget_usd in providers.json to override)"
+        if json_output:
+            print(json.dumps({"continue": True, "agent_message": f"⚠️ {msg}"}))
+        else:
+            print(f"[council] ⚠️ {msg}", file=sys.stderr)
+        return False
+
+    plan_entities = _extract_plan_entities(plan_excerpt)
+
 
     def _call_role(role):
         r_pname, r_model, r_key, r_pcfg = resolved_role_providers.get(
